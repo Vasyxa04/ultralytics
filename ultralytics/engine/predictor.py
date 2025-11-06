@@ -150,42 +150,42 @@ class BasePredictor:
         self._lock = threading.Lock()  # for automatic thread-safe inference
         callbacks.add_integration_callbacks(self)
 
-def preprocess(self, im):
-    """
-    Prepares input image before inference.
-    
-    Args:
-        im (torch.Tensor | List(np.ndarray)): BCHW for tensor, [(HWC) x B] for list.
-    
-    Returns:
-        (torch.Tensor): Preprocessed image tensor.
-    """
-    not_tensor = not isinstance(im, torch.Tensor)
-    
-    # === ДОБАВИТЬ: Сохранить dtype ДО трансформаций ===
-    original_dtype = None
-    if not_tensor and len(im) > 0:
-        original_dtype = im[0].dtype
-    
-    if not_tensor:
-        im = np.stack(self.pre_transform(im))
-        im = im[..., ::-1].transpose((0, 3, 1, 2))  # BGR to RGB, BHWC to BCHW, (n, 3, h, w)
-        im = np.ascontiguousarray(im)  # contiguous
-        im = torch.from_numpy(im)
-    
-    im = im.to(self.device)
-    im = im.half() if self.model.fp16 else im.float()  # uint8/uint16 to fp16/32
-    
-    if not_tensor:
-        # === ИСПРАВИТЬ: Нормализация с учётом битности ===
-        if original_dtype == np.uint16:
-            im /= 65535.0  # 16-bit: 0-65535 → 0.0-1.0
-        elif original_dtype == np.int16:
-            im = (im + 32768.0) / 65535.0  # int16: -32768-32767 → 0.0-1.0
-        else:
-            im /= 255.0  # 8-bit: 0-255 → 0.0-1.0
-    
-    return im
+    def preprocess(self, im):
+        """
+        Prepares input image before inference.
+        
+        Args:
+            im (torch.Tensor | List(np.ndarray)): BCHW for tensor, [(HWC) x B] for list.
+        
+        Returns:
+            (torch.Tensor): Preprocessed image tensor.
+        """
+        not_tensor = not isinstance(im, torch.Tensor)
+        
+        # === ДОБАВИТЬ: Сохранить dtype ДО трансформаций ===
+        original_dtype = None
+        if not_tensor and len(im) > 0:
+            original_dtype = im[0].dtype
+        
+        if not_tensor:
+            im = np.stack(self.pre_transform(im))
+            im = im[..., ::-1].transpose((0, 3, 1, 2))  # BGR to RGB, BHWC to BCHW, (n, 3, h, w)
+            im = np.ascontiguousarray(im)  # contiguous
+            im = torch.from_numpy(im)
+        
+        im = im.to(self.device)
+        im = im.half() if self.model.fp16 else im.float()  # uint8/uint16 to fp16/32
+        
+        if not_tensor:
+            # === ИСПРАВИТЬ: Нормализация с учётом битности ===
+            if original_dtype == np.uint16:
+                im /= 65535.0  # 16-bit: 0-65535 → 0.0-1.0
+            elif original_dtype == np.int16:
+                im = (im + 32768.0) / 65535.0  # int16: -32768-32767 → 0.0-1.0
+            else:
+                im /= 255.0  # 8-bit: 0-255 → 0.0-1.0
+        
+        return im
 
     def inference(self, im: torch.Tensor, *args, **kwargs):
         """Run inference on a given image using the specified model and arguments."""
