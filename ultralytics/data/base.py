@@ -85,6 +85,7 @@ class BaseDataset(Dataset):
         classes: list[int] | None = None,
         fraction: float = 1.0,
         channels: int = 3,
+        bit_depth: int = 8,
     ):
         """
         Initialize BaseDataset with given configuration and options.
@@ -113,7 +114,14 @@ class BaseDataset(Dataset):
         self.prefix = prefix
         self.fraction = fraction
         self.channels = channels
-        self.cv2_flag = cv2.IMREAD_GRAYSCALE if channels == 1 else cv2.IMREAD_COLOR
+        self.bit_depth = bit_depth
+         if bit_depth == 16:
+            # Для 16-бит ВСЕГДА используем IMREAD_UNCHANGED
+            self.cv2_flag = cv2.IMREAD_UNCHANGED
+            LOGGER.info(f"{self.prefix}Using 16-bit image mode (IMREAD_UNCHANGED)")
+        else:
+            # Стандартное поведение для 8-бит
+            self.cv2_flag = cv2.IMREAD_GRAYSCALE if channels == 1 else cv2.IMREAD_COLOR
         self.im_files = self.get_img_files(self.img_path)
         self.labels = self.get_labels()
         self.update_labels(include_class=classes)  # single_cls and include_class
@@ -212,16 +220,16 @@ class BaseDataset(Dataset):
     def load_image(self, i: int, rect_mode: bool = True) -> tuple[np.ndarray, tuple[int, int], tuple[int, int]]:
         """
         Load an image from dataset index 'i'.
-
+        
         Args:
             i (int): Index of the image to load.
             rect_mode (bool): Whether to use rectangular resizing.
-
+        
         Returns:
             im (np.ndarray): Loaded image as a NumPy array.
             hw_original (tuple[int, int]): Original image dimensions in (height, width) format.
             hw_resized (tuple[int, int]): Resized image dimensions in (height, width) format.
-
+        
         Raises:
             FileNotFoundError: If the image file is not found.
         """
@@ -230,39 +238,64 @@ class BaseDataset(Dataset):
             if fn.exists():  # load npy
                 try:
                     im = np.load(fn)
+                    
+                    # === ДОБАВИТЬ: Валидация dtype после загрузки из кэша ===
+                    if hasattr(self, 'bit_depth') and self.bit_depth == 16:
+                        if im.dtype not in [np.uint16, np.int16]:
+                            LOGGER.warning(
+                                f"{self.prefix}Cached .npy file has wrong dtype {im.dtype}, "
+                                f"expected uint16. Reloading from source: {f}"
+                            )
+                            Path(fn).unlink(missing_ok=True)
+                            im = None
+                            
                 except Exception as e:
                     LOGGER.warning(f"{self.prefix}Removing corrupt *.npy image file {fn} due to: {e}")
                     Path(fn).unlink(missing_ok=True)
-                    im = imread(f, flags=self.cv2_flag)  # BGR
-            else:  # read image
+                    im = None
+            
+            if im is None:  # read image from source
                 im = imread(f, flags=self.cv2_flag)  # BGR
+                
             if im is None:
                 raise FileNotFoundError(f"Image Not Found {f}")
-
+            
+            # === ДОБАВИТЬ: Валидация dtype после загрузки ===
+            if hasattr(self, 'bit_depth') and self.bit_depth == 16:
+                if im.dtype not in [np.uint16, np.int16]:
+                    LOGGER.warning(
+                        f"{self.prefix}Expected 16-bit image but got {im.dtype} for {f}. "
+                        f"Check that images are actually 16-bit and cv2_flag is IMREAD_UNCHANGED."
+                    )
+            
             h0, w0 = im.shape[:2]  # orig hw
             if rect_mode:  # resize long side to imgsz while maintaining aspect ratio
                 r = self.imgsz / max(h0, w0)  # ratio
                 if r != 1:  # if sizes are not equal
                     w, h = (min(math.ceil(w0 * r), self.imgsz), min(math.ceil(h0 * r), self.imgsz))
-                    im = cv2.resize(im, (w, h), interpolation=cv2.INTER_LINEAR)
+                    # === ИЗМЕНИТЬ: Использовать безопасный resize ===
+                    im = self._resize_preserve_dtype(im, (w, h))
             elif not (h0 == w0 == self.imgsz):  # resize by stretching image to square imgsz
-                im = cv2.resize(im, (self.imgsz, self.imgsz), interpolation=cv2.INTER_LINEAR)
+                # === ИЗМЕНИТЬ: Использовать безопасный resize ===
+                im = self._resize_preserve_dtype(im, (self.imgsz, self.imgsz))
+            
             if im.ndim == 2:
                 im = im[..., None]
-
+            
             # Add to buffer if training with augmentations
             if self.augment:
-                self.ims[i], self.im_hw0[i], self.im_hw[i] = im, (h0, w0), im.shape[:2]  # im, hw_original, hw_resized
+                self.ims[i], self.im_hw0[i], self.im_hw[i] = im, (h0, w0), im.shape[:2]
                 self.buffer.append(i)
-                if 1 < len(self.buffer) >= self.max_buffer_length:  # prevent empty buffer
+                if 1 < len(self.buffer) >= self.max_buffer_length:
                     j = self.buffer.pop(0)
                     if self.cache != "ram":
                         self.ims[j], self.im_hw0[j], self.im_hw[j] = None, None, None
-
+            
             return im, (h0, w0), im.shape[:2]
-
+        
         return self.ims[i], self.im_hw0[i], self.im_hw[i]
 
+    
     def cache_images(self) -> None:
         """Cache images to memory or disk for faster training."""
         b, gb = 0, 1 << 30  # bytes of cached images, bytes per gigabytes
@@ -423,6 +456,42 @@ class BaseDataset(Dataset):
         """
         raise NotImplementedError
 
+
+    def _resize_preserve_dtype(self, im: np.ndarray, target_size: tuple[int, int]) -> np.ndarray:
+        """
+        Resize image while preserving dtype (critical for 16-bit images).
+        
+        Args:
+            im (np.ndarray): Input image.
+            target_size (tuple[int, int]): Target size as (width, height).
+        
+        Returns:
+            (np.ndarray): Resized image with preserved dtype.
+        """
+        original_dtype = im.dtype
+        
+        # Для 16-битных изображений нужна специальная обработка
+        if original_dtype in [np.uint16, np.int16]:
+            # Нормализация к float32
+            if original_dtype == np.uint16:
+                im_float = im.astype(np.float32) / 65535.0
+            else:  # int16
+                im_float = im.astype(np.float32) / 32767.0
+            
+            # Resize
+            im_resized = cv2.resize(im_float, target_size, interpolation=cv2.INTER_LINEAR)
+            
+            # Обратная конвертация
+            if original_dtype == np.uint16:
+                im_resized = np.clip(im_resized * 65535.0, 0, 65535).astype(np.uint16)
+            else:
+                im_resized = np.clip(im_resized * 32767.0, -32768, 32767).astype(np.int16)
+            
+            return im_resized
+        else:
+            # Обычный resize для 8-бит
+            return cv2.resize(im, target_size, interpolation=cv2.INTER_LINEAR)
+    
     def get_labels(self) -> list[dict[str, Any]]:
         """
         Users can customize their own format here.
