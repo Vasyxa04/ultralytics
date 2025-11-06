@@ -115,7 +115,7 @@ class BaseDataset(Dataset):
         self.fraction = fraction
         self.channels = channels
         self.bit_depth = bit_depth
-         if bit_depth == 16:
+        if bit_depth == 16:
             # Для 16-бит ВСЕГДА используем IMREAD_UNCHANGED
             self.cv2_flag = cv2.IMREAD_UNCHANGED
             LOGGER.info(f"{self.prefix}Using 16-bit image mode (IMREAD_UNCHANGED)")
