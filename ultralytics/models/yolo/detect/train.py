@@ -108,31 +108,17 @@ class DetectionTrainer(BaseTrainer):
             drop_last=self.args.compile and mode == "train",
         )
 
-    def preprocess_batch(self, batch):
-        """
-        Preprocess a batch of images by scaling and converting to float.
-        
-        Args:
-            batch (dict): Dictionary containing batch data with 'img' tensor.
-        
-        Returns:
-            (dict): Preprocessed batch with normalized images.
-        """
-        # === ИЗМЕНИТЬ: Определить dtype перед нормализацией ===
-        # Проверяем максимальное значение чтобы понять битность
-        img_max = batch["img"].max().item()
-        
-        batch["img"] = batch["img"].to(self.device, non_blocking=True).float()
-        
-        # === ИСПРАВИТЬ: Нормализация с учётом битности ===
-        if img_max > 255:
-            # Изображение 16-битное (или уже в диапазоне > 255)
-            batch["img"] /= 65535.0
-        else:
-            # Изображение 8-битное
-            batch["img"] /= 255.0
-        
-        return batch
+def preprocess_batch(self, batch):
+    """Preprocess batch with explicit bit_depth parameter."""
+    batch["img"] = batch["img"].to(self.device, non_blocking=True).float()
+    
+    # Используем параметр из конфигурации
+    bit_depth = getattr(self.args, 'bit_depth', 8)
+    normalization_value = 65535.0 if bit_depth == 16 else 255.0
+    
+    batch["img"] /= normalization_value
+    
+    return batch
 
     def set_model_attributes(self):
         """Set model attributes based on dataset information."""
