@@ -108,34 +108,30 @@ class DetectionTrainer(BaseTrainer):
             drop_last=self.args.compile and mode == "train",
         )
 
-    def preprocess_batch(self, batch: dict) -> dict:
+    def preprocess_batch(self, batch):
         """
         Preprocess a batch of images by scaling and converting to float.
-
+        
         Args:
             batch (dict): Dictionary containing batch data with 'img' tensor.
-
+        
         Returns:
             (dict): Preprocessed batch with normalized images.
         """
-        for k, v in batch.items():
-            if isinstance(v, torch.Tensor):
-                batch[k] = v.to(self.device, non_blocking=self.device.type == "cuda")
-        batch["img"] = batch["img"].float() / 255
-        if self.args.multi_scale:
-            imgs = batch["img"]
-            sz = (
-                random.randrange(int(self.args.imgsz * 0.5), int(self.args.imgsz * 1.5 + self.stride))
-                // self.stride
-                * self.stride
-            )  # size
-            sf = sz / max(imgs.shape[2:])  # scale factor
-            if sf != 1:
-                ns = [
-                    math.ceil(x * sf / self.stride) * self.stride for x in imgs.shape[2:]
-                ]  # new shape (stretched to gs-multiple)
-                imgs = nn.functional.interpolate(imgs, size=ns, mode="bilinear", align_corners=False)
-            batch["img"] = imgs
+        # === ИЗМЕНИТЬ: Определить dtype перед нормализацией ===
+        # Проверяем максимальное значение чтобы понять битность
+        img_max = batch["img"].max().item()
+        
+        batch["img"] = batch["img"].to(self.device, non_blocking=True).float()
+        
+        # === ИСПРАВИТЬ: Нормализация с учётом битности ===
+        if img_max > 255:
+            # Изображение 16-битное (или уже в диапазоне > 255)
+            batch["img"] /= 65535.0
+        else:
+            # Изображение 8-битное
+            batch["img"] /= 255.0
+        
         return batch
 
     def set_model_attributes(self):
