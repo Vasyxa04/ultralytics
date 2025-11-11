@@ -316,7 +316,17 @@ class BaseDataset(Dataset):
         """Save an image as an *.npy file for faster loading."""
         f = self.npy_files[i]
         if not f.exists():
-            np.save(f.as_posix(), imread(self.im_files[i]), allow_pickle=False)
+            # Загружаем с правильным флагом (например, IMREAD_UNCHANGED для 16-bit)
+            im = imread(self.im_files[i], flags=self.cv2_flag)
+
+            if im is None:
+                LOGGER.warning(f"{self.prefix}Failed to read {self.im_files[i]} — skipping cache.")
+                return
+
+            # Сохраняем с исходным dtype (важно: НЕ кастим к float32!)
+            np.save(f.as_posix(), im, allow_pickle=False)
+
+            LOGGER.debug(f"{self.prefix}Cached image saved: {f.name} ({im.dtype}, shape={im.shape})")
 
     def check_cache_disk(self, safety_margin: float = 0.5) -> bool:
         """
@@ -456,20 +466,19 @@ class BaseDataset(Dataset):
         """
         raise NotImplementedError
 
-
     def _resize_preserve_dtype(self, im: np.ndarray, target_size: tuple[int, int]) -> np.ndarray:
         """
         Resize image while preserving dtype (critical for 16-bit images).
-        
+
         Args:
             im (np.ndarray): Input image.
             target_size (tuple[int, int]): Target size as (width, height).
-        
+
         Returns:
             (np.ndarray): Resized image with preserved dtype.
         """
         original_dtype = im.dtype
-        
+
         # Для 16-битных изображений нужна специальная обработка
         if original_dtype in [np.uint16, np.int16]:
             # Нормализация к float32
@@ -477,21 +486,33 @@ class BaseDataset(Dataset):
                 im_float = im.astype(np.float32) / 65535.0
             else:  # int16
                 im_float = im.astype(np.float32) / 32767.0
-            
-            # Resize
-            im_resized = cv2.resize(im_float, target_size, interpolation=cv2.INTER_LINEAR)
-            
+
+            # Resize (учёт многоканальных изображений)
+            if im.ndim == 3:
+                im_resized = np.stack([
+                    cv2.resize(im_float[..., c], target_size, interpolation=cv2.INTER_LINEAR)
+                    for c in range(im.shape[2])
+                ], axis=2)
+            else:
+                im_resized = cv2.resize(im_float, target_size, interpolation=cv2.INTER_LINEAR)
+
             # Обратная конвертация
             if original_dtype == np.uint16:
                 im_resized = np.clip(im_resized * 65535.0, 0, 65535).astype(np.uint16)
             else:
                 im_resized = np.clip(im_resized * 32767.0, -32768, 32767).astype(np.int16)
-            
+
             return im_resized
         else:
             # Обычный resize для 8-бит
-            return cv2.resize(im, target_size, interpolation=cv2.INTER_LINEAR)
-    
+            if im.ndim == 3:
+                return np.stack([
+                    cv2.resize(im[..., c], target_size, interpolation=cv2.INTER_LINEAR)
+                    for c in range(im.shape[2])
+                ], axis=2)
+            else:
+                return cv2.resize(im, target_size, interpolation=cv2.INTER_LINEAR)
+
     def get_labels(self) -> list[dict[str, Any]]:
         """
         Users can customize their own format here.
