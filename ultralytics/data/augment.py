@@ -1590,156 +1590,96 @@ class RandomFlip:
         return labels
 
 
+import numpy as np
+import cv2
+
 class LetterBox:
-    """
-    Resize image and padding for detection, instance segmentation, pose.
-
-    This class resizes and pads images to a specified shape while preserving aspect ratio. It also updates
-    corresponding labels and bounding boxes.
-
-    Attributes:
-        new_shape (tuple): Target shape (height, width) for resizing.
-        auto (bool): Whether to use minimum rectangle.
-        scale_fill (bool): Whether to stretch the image to new_shape.
-        scaleup (bool): Whether to allow scaling up. If False, only scale down.
-        stride (int): Stride for rounding padding.
-        center (bool): Whether to center the image or align to top-left.
-
-    Methods:
-        __call__: Resize and pad image, update labels and bounding boxes.
-
-    Examples:
-        >>> transform = LetterBox(new_shape=(640, 640))
-        >>> result = transform(labels)
-        >>> resized_img = result["img"]
-        >>> updated_instances = result["instances"]
-    """
+    """Resize image and padding for detection, segmentation, pose tasks."""
 
     def __init__(
         self,
-        new_shape: tuple[int, int] = (640, 640),
-        auto: bool = False,
-        scale_fill: bool = False,
-        scaleup: bool = True,
-        center: bool = True,
-        stride: int = 32,
-        padding_value: int = 114,
-        interpolation: int = cv2.INTER_LINEAR,
+        new_shape=(640, 640),
+        auto=False,
+        scale_fill=False,
+        scaleup=True,
+        center=True,
+        stride=32,
+        padding_value=255,
+        interpolation=cv2.INTER_LINEAR,
     ):
-        """
-        Initialize LetterBox object for resizing and padding images.
-
-        This class is designed to resize and pad images for object detection, instance segmentation, and pose estimation
-        tasks. It supports various resizing modes including auto-sizing, scale-fill, and letterboxing.
-
-        Args:
-            new_shape (tuple[int, int]): Target size (height, width) for the resized image.
-            auto (bool): If True, use minimum rectangle to resize. If False, use new_shape directly.
-            scale_fill (bool): If True, stretch the image to new_shape without padding.
-            scaleup (bool): If True, allow scaling up. If False, only scale down.
-            center (bool): If True, center the placed image. If False, place image in top-left corner.
-            stride (int): Stride of the model (e.g., 32 for YOLOv5).
-            padding_value (int): Value for padding the image. Default is 114.
-            interpolation (int): Interpolation method for resizing. Default is cv2.INTER_LINEAR.
-
-        Attributes:
-            new_shape (tuple[int, int]): Target size for the resized image.
-            auto (bool): Flag for using minimum rectangle resizing.
-            scale_fill (bool): Flag for stretching image without padding.
-            scaleup (bool): Flag for allowing upscaling.
-            stride (int): Stride value for ensuring image size is divisible by stride.
-            padding_value (int): Value used for padding the image.
-            interpolation (int): Interpolation method used for resizing.
-
-        Examples:
-            >>> letterbox = LetterBox(new_shape=(640, 640), auto=False, scale_fill=False, scaleup=True, stride=32)
-            >>> resized_img = letterbox(original_img)
-        """
         self.new_shape = new_shape
         self.auto = auto
         self.scale_fill = scale_fill
         self.scaleup = scaleup
+        self.center = center
         self.stride = stride
-        self.center = center  # Put the image in the middle or top-left
         self.padding_value = padding_value
         self.interpolation = interpolation
 
     def __call__(self, labels=None, image=None):
-        """
-        Apply letterbox transformation to image.
-        
-        Args:
-            labels (dict, optional): Label information dictionary.
-            image (np.ndarray, optional): Image to transform.
-        
-        Returns:
-            (dict | np.ndarray): Transformed labels or image.
-        """
         if labels is None:
             labels = {}
-        
+
         img = labels.get("img") if image is None else image
-        shape = img.shape[:2]  # current shape [height, width]
+
+        # ✅ Debug: печать информации о изображении
+        print(f"[LetterBox] dtype={img.dtype}, shape={img.shape}, min={img.min()}, max={img.max()}")
+
+        if img.ndim == 2:
+            img = img[:, :, None]
+
+        shape = img.shape[:2]
         new_shape = labels.pop("rect_shape", self.new_shape)
-        
         if isinstance(new_shape, int):
             new_shape = (new_shape, new_shape)
-        
-        # Scale ratio (new / old)
+
         r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-        if not self.scaleup:  # only scale down, do not scale up (for better val mAP)
+        if not self.scaleup:
             r = min(r, 1.0)
-        
-        # Compute padding
-        ratio = r, r  # width, height ratios
-        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-        dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
-        
-        if self.auto:  # minimum rectangle
-            dw, dh = np.mod(dw, self.stride), np.mod(dh, self.stride)  # wh padding
-        elif self.scaleFill:  # stretch
+
+        ratio = (r, r)
+        new_unpad = (int(round(shape[1] * r)), int(round(shape[0] * r)))
+        dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]
+
+        if self.auto:
+            dw, dh = np.mod(dw, self.stride), np.mod(dh, self.stride)
+        elif self.scale_fill:
             dw, dh = 0.0, 0.0
             new_unpad = (new_shape[1], new_shape[0])
-            ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
-        
+            ratio = (new_shape[1] / shape[1], new_shape[0] / shape[0])
+
         if self.center:
-            dw /= 2  # divide padding into 2 sides
+            dw /= 2
             dh /= 2
-        
-        # === ИЗМЕНИТЬ: Resize с сохранением dtype ===
-        if shape[::-1] != new_unpad:  # resize
-            # Проверяем dtype для 16-бит
-            if img.dtype in [np.uint16, np.int16]:
-                original_dtype = img.dtype
-                
-                # Нормализация
+
+        if shape[::-1] != new_unpad:
+            original_dtype = img.dtype
+            if original_dtype in [np.uint16, np.int16]:
+                img_f = img.astype(np.float32)
                 if original_dtype == np.uint16:
-                    img = (img.astype(np.float32) / 65535.0)
-                else:  # int16
-                    img = (img.astype(np.float32) / 32767.0)
-                
-                # Resize
-                img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
-                
-                # Денормализация
+                    img_f /= 65535.0
+                elif original_dtype == np.int16:
+                    img_f /= 32767.0
+                img_f = cv2.resize(img_f, new_unpad, interpolation=self.interpolation)
                 if original_dtype == np.uint16:
-                    img = np.clip(img * 65535.0, 0, 65535).astype(np.uint16)
-                else:
-                    img = np.clip(img * 32767.0, -32768, 32767).astype(np.int16)
+                    img = np.clip(img_f * 65535.0, 0, 65535).astype(np.uint16)
+                elif original_dtype == np.int16:
+                    img = np.clip(img_f * 32767.0, -32768, 32767).astype(np.int16)
             else:
-                # Обычный resize для 8-бит
-                img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
-        
-        # Add border
+                img = cv2.resize(img, new_unpad, interpolation=self.interpolation)
+
+        # ✅ Подбор padding_value под тип изображения
+        if img.dtype == np.uint16:
+            pad_value = int(self.padding_value / 255 * 65535)
+        elif img.dtype == np.int16:
+            pad_value = 0
+        else:
+            pad_value = self.padding_value
+
         top, bottom = int(round(dh - 0.1)) if self.center else 0, int(round(dh + 0.1))
         left, right = int(round(dw - 0.1)) if self.center else 0, int(round(dw + 0.1))
-        img = cv2.copyMakeBorder(
-            img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114)
-        )  # add border
-        
-        if labels.get("ratio_pad"):
-            labels["ratio_pad"] = (labels["ratio_pad"], (left, top))  # for evaluation
-        
+        img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=[pad_value]*img.shape[2])
+
         if len(labels):
             labels = self._update_labels(labels, ratio, dw, dh)
             labels["img"] = img
@@ -1749,34 +1689,13 @@ class LetterBox:
             return img
 
     @staticmethod
-    def _update_labels(labels: dict[str, Any], ratio: tuple[float, float], padw: float, padh: float) -> dict[str, Any]:
-        """
-        Update labels after applying letterboxing to an image.
-
-        This method modifies the bounding box coordinates of instances in the labels
-        to account for resizing and padding applied during letterboxing.
-
-        Args:
-            labels (dict[str, Any]): A dictionary containing image labels and instances.
-            ratio (tuple[float, float]): Scaling ratios (width, height) applied to the image.
-            padw (float): Padding width added to the image.
-            padh (float): Padding height added to the image.
-
-        Returns:
-            (dict[str, Any]): Updated labels dictionary with modified instance coordinates.
-
-        Examples:
-            >>> letterbox = LetterBox(new_shape=(640, 640))
-            >>> labels = {"instances": Instances(...)}
-            >>> ratio = (0.5, 0.5)
-            >>> padw, padh = 10, 20
-            >>> updated_labels = letterbox._update_labels(labels, ratio, padw, padh)
-        """
+    def _update_labels(labels, ratio, padw, padh):
         labels["instances"].convert_bbox(format="xyxy")
         labels["instances"].denormalize(*labels["img"].shape[:2][::-1])
         labels["instances"].scale(*ratio)
         labels["instances"].add_padding(padw, padh)
         return labels
+
 
 
 class CopyPaste(BaseMixTransform):
