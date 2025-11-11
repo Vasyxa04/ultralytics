@@ -693,15 +693,33 @@ def masks2segments(masks, strategy: str = "all"):
 
 def convert_torch2numpy_batch(batch: torch.Tensor) -> np.ndarray:
     """
-    Convert a batch of FP32 torch tensors to NumPy uint8 arrays, changing from BCHW to BHWC layout.
+    Convert a batch of torch tensors to NumPy arrays, preserving bit depth.
+    Handles both 8-bit [0,1] and 16-bit [0,65535] normalized tensors.
 
     Args:
-        batch (torch.Tensor): Input tensor batch with shape (Batch, Channels, Height, Width) and dtype torch.float32.
+        batch (torch.Tensor): Tensor with shape (B, C, H, W). Can be float32, uint8, or uint16.
 
     Returns:
-        (np.ndarray): Output NumPy array batch with shape (Batch, Height, Width, Channels) and dtype uint8.
+        np.ndarray: NumPy array with shape (B, H, W, C), dtype either uint8 or uint16.
     """
-    return (batch.permute(0, 2, 3, 1).contiguous() * 255).clamp(0, 255).byte().cpu().numpy()
+    # Move to CPU, ensure contiguous memory
+    batch = batch.permute(0, 2, 3, 1).contiguous().cpu()
+
+    if batch.dtype == torch.float32:
+        # Auto-detect dynamic range
+        max_val = batch.max().item()
+        if max_val > 1.1:  # likely in 0–65535
+            batch = batch.clamp(0, 65535).numpy().astype(np.uint16)
+        else:  # standard [0,1] range
+            batch = (batch * 255).clamp(0, 255).numpy().astype(np.uint8)
+    elif batch.dtype == torch.uint8:
+        batch = batch.numpy()
+    elif batch.dtype == torch.uint16:
+        batch = batch.numpy()
+    else:
+        raise TypeError(f"Unsupported tensor dtype for conversion: {batch.dtype}")
+
+    return batch
 
 
 def clean_str(s):
