@@ -1,0 +1,41 @@
+# YOLO11 small model
+nc: 4  # number of classes
+
+# Scale parameters
+depth_multiple: 0.50
+width_multiple: 0.50
+max_channels: 1024
+
+# Backbone
+backbone:
+  - [-1, 1, Conv, [32, 3, 2]]        # 0-P1/2
+  - [-1, 1, Conv, [64, 3, 2]]        # 1-P2/4
+  - [-1, 1, C3k2, [128, False, 0.50]]
+  - [-1, 1, Conv, [128, 3, 2]]       # 3-P3/8
+  - [-1, 1, C3k2, [256, False, 0.50]]
+  - [-1, 1, Conv, [256, 3, 2]]       # 5-P4/16
+  - [-1, 1, C3k2, [256, True]]
+  - [-1, 1, Conv, [512, 3, 2]]       # 7-P5/32
+  - [-1, 1, C3k2, [512, True]]
+  - [-1, 1, SPPF, [512, 5]]          # 9
+  - [-1, 1, C2PSA, [512]]            # 10
+
+# Head
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 6], 1, Concat, [1]]
+  - [-1, 1, C3k2, [256, False]]      # 13
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 4], 1, Concat, [1]]
+  - [-1, 1, C3k2, [128, False]]      # 16 (P3/8-small)
+
+  - [-1, 1, Conv, [128, 3, 2]]
+  - [[-1, 13], 1, Concat, [1]]
+  - [-1, 1, C3k2, [256, False]]      # 19 (P4/16-medium)
+
+  - [-1, 1, Conv, [256, 3, 2]]
+  - [[-1, 10], 1, Concat, [1]]
+  - [-1, 1, C3k2, [512, True]]       # 22 (P5/32-large)
+
+  - [[16, 19, 22], 1, Detect, [nc]]  # Detect(P3, P4, P5)
