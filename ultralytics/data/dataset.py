@@ -796,19 +796,44 @@ class ClassificationDataset:
         Returns:
             (dict): Dictionary containing the image and its class index.
         """
-        f, j, fn, im = self.samples[i]  # filename, index, filename.with_suffix('.npy'), image
+        f, j, fn, im = self.samples[i]  # filename, class index, npy path, cached image
+
+        # === LOAD IMAGE ===
         if self.cache_ram:
-            if im is None:  # Warning: two separate if statements required here, do not combine this with previous line
-                im = self.samples[i][3] = cv2.imread(f)
+            if im is None:
+                # ✅ читаем с сохранением глубины (16 бит, если есть)
+                im = self.samples[i][3] = cv2.imread(f, cv2.IMREAD_UNCHANGED)
         elif self.cache_disk:
-            if not fn.exists():  # load npy
-                np.save(fn.as_posix(), cv2.imread(f), allow_pickle=False)
+            if not fn.exists():
+                np.save(fn.as_posix(), cv2.imread(f, cv2.IMREAD_UNCHANGED), allow_pickle=False)
             im = np.load(fn)
-        else:  # read image
-            im = cv2.imread(f)  # BGR
-        # Convert NumPy array to PIL image
-        im = Image.fromarray(cv2.cvtColor(im, cv2.COLOR_BGR2RGB))
+        else:
+            # ✅ обычная загрузка — тоже с IMREAD_UNCHANGED
+            im = cv2.imread(f, cv2.IMREAD_UNCHANGED)
+
+        # === Проверка ===
+        if im is None:
+            raise FileNotFoundError(f"Image not found: {f}")
+
+        # === Проверяем битность и нормализуем при необходимости ===
+        if im.dtype == np.uint16:
+            print(f"[Dataset] Loaded 16-bit image: {f}, min={im.min()}, max={im.max()}")
+            # ⚠️ cv2.cvtColor не всегда поддерживает uint16 → приводим в float32
+            im = (im.astype(np.float32) / 65535.0 * 255).astype(np.uint8)
+        elif im.dtype == np.int16:
+            print(f"[Dataset] Loaded signed 16-bit image: {f}, min={im.min()}, max={im.max()}")
+            im = ((im.astype(np.float32) + 32768.0) / 65535.0 * 255).astype(np.uint8)
+
+        # === Преобразуем в RGB для PIL ===
+        if im.ndim == 2:  # grayscale
+            im = cv2.cvtColor(im, cv2.COLOR_GRAY2RGB)
+        else:
+            im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+
+        # === В PIL и дальше через transforms ===
+        im = Image.fromarray(im)
         sample = self.torch_transforms(im)
+
         return {"img": sample, "cls": j}
 
     def __len__(self) -> int:
