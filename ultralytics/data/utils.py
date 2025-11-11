@@ -749,39 +749,66 @@ class HUBDatasetStats:
 
 def compress_one_image(f: str, f_new: str | None = None, max_dim: int = 1920, quality: int = 50):
     """
-    Compress a single image file to reduced size while preserving its aspect ratio and quality using either the Python
-    Imaging Library (PIL) or OpenCV library. If the input image is smaller than the maximum dimension, it will not be
-    resized.
+    Compress a single image file to reduced size while preserving its aspect ratio and quality.
+    Supports both 8-bit and 16-bit images (TIFF, PNG, JPEG).
 
     Args:
-        f (str): The path to the input image file.
-        f_new (str, optional): The path to the output image file. If not specified, the input file will be overwritten.
-        max_dim (int, optional): The maximum dimension (width or height) of the output image.
-        quality (int, optional): The image compression quality as a percentage.
-
-    Examples:
-        >>> from pathlib import Path
-        >>> from ultralytics.data.utils import compress_one_image
-        >>> for f in Path("path/to/dataset").rglob("*.jpg"):
-        >>>    compress_one_image(f)
+        f (str): Path to input image.
+        f_new (str, optional): Output path. If None, overwrites original.
+        max_dim (int, optional): Maximum allowed width or height.
+        quality (int, optional): Compression quality (for JPEGs).
     """
-    try:  # use PIL
-        Image.MAX_IMAGE_PIXELS = None  # Fix DecompressionBombError, allow optimization of image > ~178.9 million pixels
+    try:
+        Image.MAX_IMAGE_PIXELS = None
         im = Image.open(f)
-        if im.mode in {"RGBA", "LA"}:  # Convert to RGB if needed (for JPEG)
+
+        # === Определяем битность ===
+        bit_depth = im.bits if hasattr(im, "bits") else 8
+        mode = im.mode
+
+        # === Конвертируем RGBA → RGB, если надо ===
+        if mode in {"RGBA", "LA"}:
             im = im.convert("RGB")
-        r = max_dim / max(im.height, im.width)  # ratio
-        if r < 1.0:  # image too large
-            im = im.resize((int(im.width * r), int(im.height * r)))
-        im.save(f_new or f, "JPEG", quality=quality, optimize=True)  # save
-    except Exception as e:  # use OpenCV
-        LOGGER.warning(f"HUB ops PIL failure {f}: {e}")
-        im = cv2.imread(f)
-        im_height, im_width = im.shape[:2]
-        r = max_dim / max(im_height, im_width)  # ratio
-        if r < 1.0:  # image too large
-            im = cv2.resize(im, (int(im_width * r), int(im_height * r)), interpolation=cv2.INTER_AREA)
-        cv2.imwrite(str(f_new or f), im)
+
+        # === Масштабируем ===
+        r = max_dim / max(im.width, im.height)
+        if r < 1.0:
+            new_size = (int(im.width * r), int(im.height * r))
+            im = im.resize(new_size, Image.Resampling.LANCZOS)
+
+        # === Сохраняем ===
+        save_path = f_new or f
+        if bit_depth > 8 or f.lower().endswith((".tif", ".tiff", ".png")):
+            # Для 16-бит сохраняем в без потерь (PNG/TIFF)
+            im.save(save_path, format="TIFF" if f.endswith(".tif") else "PNG", compress_level=1)
+        else:
+            im.save(save_path, "JPEG", quality=quality, optimize=True)
+        return save_path
+
+    except Exception as e:
+        # === fallback через OpenCV ===
+        LOGGER.warning(f"[compress_one_image] PIL failed for {f}: {e}")
+        im = cv2.imread(f, cv2.IMREAD_UNCHANGED)
+        if im is None:
+            LOGGER.error(f"Failed to read image {f}")
+            return
+
+        # === Определяем битность ===
+        is_16bit = im.dtype in (np.uint16, np.int16)
+
+        # === Масштабируем ===
+        h, w = im.shape[:2]
+        r = max_dim / max(h, w)
+        if r < 1.0:
+            im = cv2.resize(im, (int(w * r), int(h * r)), interpolation=cv2.INTER_AREA)
+
+        save_path = str(f_new or f)
+        if is_16bit or f.lower().endswith((".tif", ".tiff", ".png")):
+            cv2.imwrite(save_path, im, [cv2.IMWRITE_TIFF_COMPRESSION, 1])
+        else:
+            cv2.imwrite(save_path, im, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        return save_path
+
 
 
 def load_dataset_cache_file(path: Path) -> dict:
